@@ -39,9 +39,23 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     // Increase demuxer buffer for smoother playback at higher speeds
     if (player.platform is NativePlayer) {
       final nativePlayer = player.platform as NativePlayer;
-      nativePlayer.setProperty('demuxer-max-bytes', '64MiB');
-      nativePlayer.setProperty('demuxer-max-back-bytes', '32MiB');
-      nativePlayer.setProperty('cache-secs', '30');
+      final isMobile =
+          defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS;
+      if (isMobile) {
+        // Mobile: smaller buffers to save memory, enable hardware decode
+        nativePlayer.setProperty('demuxer-max-bytes', '32MiB');
+        nativePlayer.setProperty('demuxer-max-back-bytes', '16MiB');
+        nativePlayer.setProperty('cache-secs', '15');
+        nativePlayer.setProperty('hwdec', 'auto');
+        nativePlayer.setProperty('vd-lavc-dr', 'yes');
+        nativePlayer.setProperty('vd-lavc-fast', 'yes');
+      } else {
+        // Desktop: larger buffers for quality
+        nativePlayer.setProperty('demuxer-max-bytes', '64MiB');
+        nativePlayer.setProperty('demuxer-max-back-bytes', '32MiB');
+        nativePlayer.setProperty('cache-secs', '30');
+      }
     }
     controller = VideoController(player);
     // Listen to mpv logs for debugging
@@ -70,15 +84,38 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       final videos = dash['video'] as List<dynamic>? ?? [];
       final audios = dash['audio'] as List<dynamic>? ?? [];
 
-      // Select video stream matching requested quality, fallback to highest available
+      // Select video stream matching requested quality
+      // On mobile, prefer H.264 (avc) for smoother high-speed playback
+      // On desktop, prefer highest quality codec (AV1/HEVC)
       if (videos.isNotEmpty) {
-        final match = videos.cast<Map<String, dynamic>>().where(
-          (v) => v['id'] == currentQn,
-        );
-        if (match.isNotEmpty) {
-          videoUrl = match.first['base_url'] ?? match.first['baseUrl'];
+        final isMobile =
+            defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.iOS;
+        final matchQn = videos
+            .cast<Map<String, dynamic>>()
+            .where((v) => v['id'] == currentQn)
+            .toList();
+        final candidates = matchQn.isNotEmpty
+            ? matchQn
+            : videos.cast<Map<String, dynamic>>().toList();
+
+        if (isMobile) {
+          // Mobile: prefer H.264 (codecs contains 'avc') for hardware decode compatibility
+          final avcStream = candidates
+              .where((v) => (v['codecs'] ?? '').toString().startsWith('avc'))
+              .toList();
+          final selected = avcStream.isNotEmpty
+              ? avcStream.first
+              : candidates.last;
+          videoUrl = selected['base_url'] ?? selected['baseUrl'];
+          debugPrint('[SimpleBili] Mobile codec: ${selected['codecs']}');
         } else {
-          videoUrl = videos[0]['base_url'] ?? videos[0]['baseUrl'];
+          // Desktop: use first (highest quality codec)
+          videoUrl =
+              candidates.first['base_url'] ?? candidates.first['baseUrl'];
+          debugPrint(
+            '[SimpleBili] Desktop codec: ${candidates.first['codecs']}',
+          );
         }
       }
 
