@@ -10,6 +10,7 @@ class VideoPlayerState {
   final int currentQuality;
   final List<Map<String, dynamic>> availableQualities;
   final bool isFavoriting;
+  final int? currentCid;
 
   VideoPlayerState({
     this.isLoading = false,
@@ -26,7 +27,25 @@ class VideoPlayerState {
       {'qn': 16, 'desc': '360P'},
     ],
     this.isFavoriting = false,
+    this.currentCid,
   });
+
+  /// Get the pages list from videoInfo (multi-part videos)
+  List<Map<String, dynamic>> get pages {
+    final p = videoInfo?['pages'] as List<dynamic>?;
+    return p?.cast<Map<String, dynamic>>() ?? [];
+  }
+
+  /// Get ugc_season sections from videoInfo (collection videos)
+  Map<String, dynamic>? get ugcSeason {
+    return videoInfo?['ugc_season'] as Map<String, dynamic>?;
+  }
+
+  /// Whether video has multiple pages
+  bool get hasMultiPages => pages.length > 1;
+
+  /// Whether video belongs to a ugc_season collection
+  bool get hasUgcSeason => ugcSeason != null;
 
   VideoPlayerState copyWith({
     bool? isLoading,
@@ -37,6 +56,7 @@ class VideoPlayerState {
     int? currentQuality,
     List<Map<String, dynamic>>? availableQualities,
     bool? isFavoriting,
+    int? currentCid,
     bool clearError = false,
   }) {
     return VideoPlayerState(
@@ -48,6 +68,7 @@ class VideoPlayerState {
       currentQuality: currentQuality ?? this.currentQuality,
       availableQualities: availableQualities ?? this.availableQualities,
       isFavoriting: isFavoriting ?? this.isFavoriting,
+      currentCid: currentCid ?? this.currentCid,
     );
   }
 }
@@ -58,14 +79,14 @@ class PlayerNotifier extends StateNotifier<VideoPlayerState> {
 
   PlayerNotifier(this._service, this._bvid) : super(VideoPlayerState());
 
-  Future<void> loadVideo() async {
+  Future<void> loadVideo({int? cid}) async {
     state = state.copyWith(isLoading: true, clearError: true);
     try {
-      final info = await _service.getVideoInfo(_bvid);
-      final cid = info['cid'];
+      final info = state.videoInfo ?? await _service.getVideoInfo(_bvid);
+      final targetCid = cid ?? info['cid'];
       final playInfo = await _service.getPlayUrl(
         _bvid,
-        cid,
+        targetCid,
         qn: state.currentQuality,
       );
 
@@ -89,6 +110,7 @@ class PlayerNotifier extends StateNotifier<VideoPlayerState> {
         videoInfo: info,
         playUrlInfo: playInfo,
         availableQualities: qualities,
+        currentCid: targetCid,
       );
     } catch (e) {
       state = state.copyWith(isLoading: false, error: e.toString());
@@ -127,11 +149,46 @@ class PlayerNotifier extends StateNotifier<VideoPlayerState> {
     }
   }
 
+  Future<void> switchPage(int cid) async {
+    if (state.currentCid == cid) return;
+    state = state.copyWith(isLoading: true, clearError: true);
+    try {
+      final playInfo = await _service.getPlayUrl(
+        _bvid,
+        cid,
+        qn: state.currentQuality,
+      );
+
+      List<Map<String, dynamic>>? qualities;
+      if (playInfo['dash'] != null) {
+        final videos = playInfo['dash']['video'] as List<dynamic>? ?? [];
+        final seen = <int>{};
+        qualities = [];
+        for (final v in videos) {
+          final id = v['id'] as int;
+          if (seen.add(id)) {
+            qualities.add({'qn': id, 'desc': _qualityName(id)});
+          }
+        }
+        qualities.sort((a, b) => (b['qn'] as int).compareTo(a['qn'] as int));
+      }
+
+      state = state.copyWith(
+        isLoading: false,
+        playUrlInfo: playInfo,
+        currentCid: cid,
+        availableQualities: qualities,
+      );
+    } catch (e) {
+      state = state.copyWith(isLoading: false, error: e.toString());
+    }
+  }
+
   Future<void> changeQuality(int qn) async {
     if (state.currentQuality == qn) return;
     state = state.copyWith(currentQuality: qn, isLoading: true);
     try {
-      final cid = state.videoInfo!['cid'];
+      final cid = state.currentCid ?? state.videoInfo!['cid'];
       final playInfo = await _service.getPlayUrl(_bvid, cid, qn: qn);
       state = state.copyWith(
         isLoading: false,

@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'player_provider.dart';
@@ -21,11 +24,17 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   late final VideoController controller;
   String? _currentUrl;
   int? _currentQuality;
+  int? _currentCid;
   double _lastSpeed = 1.0;
   bool _isSeeking = false;
   double _seekValueMs = 0;
   DateTime? _rightKeyDownTime;
   DateTime? _leftKeyDownTime;
+  bool _isFullscreen = false;
+  bool _fullscreenControlsVisible = true;
+  Timer? _fullscreenHideTimer;
+  final ScrollController _pagesScrollController = ScrollController();
+  final GlobalKey _activePageKey = GlobalKey();
 
   @override
   void initState() {
@@ -70,14 +79,40 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
 
   @override
   void dispose() {
+    _fullscreenHideTimer?.cancel();
+    _pagesScrollController.dispose();
     player.dispose();
     super.dispose();
+  }
+
+  void _startFullscreenHideTimer() {
+    _fullscreenHideTimer?.cancel();
+    _fullscreenHideTimer = Timer(const Duration(seconds: 5), () {
+      if (mounted && _isFullscreen) {
+        setState(() => _fullscreenControlsVisible = false);
+      }
+    });
+  }
+
+  void _onFullscreenInteraction() {
+    if (!_fullscreenControlsVisible) {
+      setState(() => _fullscreenControlsVisible = true);
+    }
+    _startFullscreenHideTimer();
   }
 
   Future<void> _playVideo(Map<String, dynamic> playUrlInfo) async {
     String? videoUrl;
     String? audioUrl;
-    final currentQn = ref.read(playerProvider(widget.bvid)).currentQuality;
+    final playerState = ref.read(playerProvider(widget.bvid));
+    final currentQn = playerState.currentQuality;
+    final currentCid = playerState.currentCid;
+
+    // If CID changed (episode switch), force reload by resetting current URL
+    if (currentCid != null && currentCid != _currentCid) {
+      _currentUrl = null;
+      _currentCid = currentCid;
+    }
 
     if (playUrlInfo['dash'] != null) {
       final dash = playUrlInfo['dash'];
@@ -247,132 +282,229 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       player.setRate(playerState.speed);
     }
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(
-          playerState.videoInfo?['title'] ?? 'Playing',
-          overflow: TextOverflow.ellipsis,
-        ),
+    // Single widget tree — Video widget NEVER changes its tree position,
+    // so the native render surface is preserved across fullscreen toggles.
+    return PopScope(
+      canPop: !_isFullscreen,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _isFullscreen) _exitFullscreen();
+      },
+      child: Scaffold(
         backgroundColor: Colors.black,
-        elevation: 0,
-      ),
-      backgroundColor: Colors.black,
-      body: Focus(
-        autofocus: true,
-        onKeyEvent: _handlePlayerKeyEvent,
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final maxVideoHeight = constraints.maxHeight * 0.5;
-            final desiredHeight = constraints.maxWidth * 9 / 16;
-            final videoHeight = desiredHeight > maxVideoHeight
-                ? maxVideoHeight
-                : desiredHeight;
-            final videoWidth = videoHeight * 16 / 9;
+        appBar: _isFullscreen
+            ? null
+            : AppBar(
+                title: Text(
+                  playerState.videoInfo?['title'] ?? 'Playing',
+                  overflow: TextOverflow.ellipsis,
+                ),
+                backgroundColor: Colors.black,
+                elevation: 0,
+              ),
+        body: Focus(
+          autofocus: true,
+          onKeyEvent: (node, event) {
+            if (_isFullscreen) {
+              _onFullscreenInteraction();
+              if (event is KeyDownEvent &&
+                  event.logicalKey == LogicalKeyboardKey.escape) {
+                _exitFullscreen();
+                return KeyEventResult.handled;
+              }
+            }
+            return _handlePlayerKeyEvent(node, event);
+          },
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final maxVideoHeight = constraints.maxHeight * 0.5;
+              final desiredHeight = constraints.maxWidth * 9 / 16;
+              final videoHeight = _isFullscreen
+                  ? constraints.maxHeight
+                  : (desiredHeight > maxVideoHeight
+                        ? maxVideoHeight
+                        : desiredHeight);
+              final videoWidth = _isFullscreen
+                  ? constraints.maxWidth
+                  : videoHeight * 16 / 9;
 
-            return Column(
-              children: [
-                SizedBox(
-                  height: videoHeight,
-                  child: Center(
-                    child: SizedBox(
-                      width: videoWidth,
-                      height: videoHeight,
-                      child: Stack(
-                        children: [
-                          Container(
-                            color: Colors.black,
-                            child: playerState.isLoading
-                                ? const Center(
-                                    child: CircularProgressIndicator(
-                                      color: Color(0xFFFB7299),
-                                    ),
-                                  )
-                                : playerState.error != null
-                                ? Center(
-                                    child: Text(
-                                      'Load failed: ${playerState.error}',
-                                      style: const TextStyle(
-                                        color: Colors.white,
+              return Column(
+                children: [
+                  // Video area — always at this tree position
+                  SizedBox(
+                    height: videoHeight,
+                    child: Center(
+                      child: SizedBox(
+                        width: videoWidth,
+                        height: videoHeight,
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () {
+                            if (_isFullscreen) {
+                              if (_fullscreenControlsVisible) {
+                                _togglePlayPause();
+                              }
+                              _onFullscreenInteraction();
+                            } else {
+                              _togglePlayPause();
+                            }
+                          },
+                          onLongPressStart: (details) {
+                            if (_isFullscreen) _onFullscreenInteraction();
+                            _lastSpeed = playerState.speed;
+                            _updateSpeed(3.0);
+                            if (!_isFullscreen) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('3.0x Speeding...'),
+                                  duration: Duration(milliseconds: 500),
+                                ),
+                              );
+                            }
+                          },
+                          onLongPressEnd: (_) {
+                            _updateSpeed(_lastSpeed);
+                          },
+                          onPanUpdate: (_) {
+                            if (_isFullscreen) _onFullscreenInteraction();
+                          },
+                          child: Stack(
+                            children: [
+                              // Video widget — ALWAYS here, never destroyed
+                              Positioned.fill(
+                                child: Video(
+                                  controller: controller,
+                                  controls: NoVideoControls,
+                                ),
+                              ),
+                              // Loading overlay
+                              if (playerState.isLoading)
+                                Positioned.fill(
+                                  child: Container(
+                                    color: Colors.black,
+                                    child: const Center(
+                                      child: CircularProgressIndicator(
+                                        color: Color(0xFFFB7299),
                                       ),
                                     ),
-                                  )
-                                : Video(
-                                    controller: controller,
-                                    controls: NoVideoControls,
                                   ),
-                          ),
-                          if (!playerState.isLoading &&
-                              playerState.error == null)
-                            Positioned.fill(
-                              child: GestureDetector(
-                                onTap: _togglePlayPause,
-                                onLongPressStart: (details) {
-                                  if (details.localPosition.dx >
-                                      MediaQuery.of(context).size.width / 2) {
-                                    _lastSpeed = playerState.speed;
-                                    _updateSpeed(3.0);
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(
-                                        content: Text('3.0x Speeding...'),
-                                        duration: Duration(milliseconds: 500),
-                                      ),
-                                    );
-                                  }
-                                },
-                                onLongPressEnd: (_) {
-                                  _updateSpeed(_lastSpeed);
-                                },
-                              ),
-                            ),
-                          if (!playerState.isLoading &&
-                              playerState.error == null)
-                            Positioned.fill(
-                              child: StreamBuilder<bool>(
-                                stream: player.stream.playing,
-                                builder: (context, snapshot) {
-                                  final isPlaying = snapshot.data ?? true;
-                                  if (isPlaying) {
-                                    return const SizedBox.shrink();
-                                  }
-                                  return Center(
-                                    child: Container(
-                                      padding: const EdgeInsets.all(12),
-                                      decoration: BoxDecoration(
-                                        color: Colors.black.withOpacity(0.5),
-                                        shape: BoxShape.circle,
-                                      ),
-                                      child: const Icon(
-                                        Icons.pause,
-                                        size: 36,
-                                        color: Colors.white,
+                                ),
+                              // Error overlay
+                              if (!playerState.isLoading &&
+                                  playerState.error != null)
+                                Positioned.fill(
+                                  child: Container(
+                                    color: Colors.black,
+                                    child: Center(
+                                      child: Text(
+                                        'Load failed: ${playerState.error}',
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                        ),
                                       ),
                                     ),
-                                  );
-                                },
-                              ),
-                            ),
-                          if (!playerState.isLoading &&
-                              playerState.error == null)
-                            Positioned(
-                              left: 0,
-                              right: 0,
-                              bottom: 0,
-                              child: _buildPlayerControlsOverlay(
-                                playerState,
-                                onFullscreenTap: _enterFullscreen,
-                                fullscreenIcon: Icons.fullscreen,
-                              ),
-                            ),
-                        ],
+                                  ),
+                                ),
+                              // Pause icon
+                              if (!playerState.isLoading &&
+                                  playerState.error == null)
+                                Positioned.fill(
+                                  child: StreamBuilder<bool>(
+                                    stream: player.stream.playing,
+                                    builder: (context, snapshot) {
+                                      final isPlaying = snapshot.data ?? true;
+                                      if (isPlaying) {
+                                        return const SizedBox.shrink();
+                                      }
+                                      return Center(
+                                        child: Container(
+                                          padding: const EdgeInsets.all(12),
+                                          decoration: BoxDecoration(
+                                            color: Colors.black.withOpacity(
+                                              0.5,
+                                            ),
+                                            shape: BoxShape.circle,
+                                          ),
+                                          child: const Icon(
+                                            Icons.pause,
+                                            size: 36,
+                                            color: Colors.white,
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+                              // Fullscreen close button
+                              if (_isFullscreen)
+                                Positioned(
+                                  top: 16,
+                                  right: 16,
+                                  child: AnimatedOpacity(
+                                    opacity: _fullscreenControlsVisible
+                                        ? 1.0
+                                        : 0.0,
+                                    duration: const Duration(milliseconds: 300),
+                                    child: IgnorePointer(
+                                      ignoring: !_fullscreenControlsVisible,
+                                      child: IconButton(
+                                        onPressed: _exitFullscreen,
+                                        icon: const Icon(
+                                          Icons.close,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              // Controls overlay
+                              if (!playerState.isLoading &&
+                                  playerState.error == null)
+                                Positioned(
+                                  left: 0,
+                                  right: 0,
+                                  bottom: 0,
+                                  child: _isFullscreen
+                                      ? AnimatedOpacity(
+                                          opacity: _fullscreenControlsVisible
+                                              ? 1.0
+                                              : 0.0,
+                                          duration: const Duration(
+                                            milliseconds: 300,
+                                          ),
+                                          child: IgnorePointer(
+                                            ignoring:
+                                                !_fullscreenControlsVisible,
+                                            child: _buildPlayerControlsOverlay(
+                                              playerState,
+                                              onFullscreenTap: _exitFullscreen,
+                                              fullscreenIcon:
+                                                  Icons.fullscreen_exit,
+                                            ),
+                                          ),
+                                        )
+                                      : _buildPlayerControlsOverlay(
+                                          playerState,
+                                          onFullscreenTap: _enterFullscreen,
+                                          fullscreenIcon: Icons.fullscreen,
+                                        ),
+                                ),
+                            ],
+                          ),
+                        ),
                       ),
                     ),
                   ),
-                ),
-                _buildEngagementBar(playerState),
-                Expanded(child: _buildVideoInfoScrollable(playerState)),
-              ],
-            );
-          },
+                  // Content below video — hidden in fullscreen
+                  if (!_isFullscreen) ...[
+                    _buildEngagementBar(playerState),
+                    if (playerState.hasMultiPages || playerState.hasUgcSeason)
+                      _buildEpisodeSection(playerState),
+                    Expanded(child: _buildVideoInfoScrollable(playerState)),
+                  ],
+                ],
+              );
+            },
+          ),
         ),
       ),
     );
@@ -436,93 +568,22 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     }
 
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (context) {
-          return Consumer(
-            builder: (context, ref, _) {
-              final state = ref.watch(playerProvider(widget.bvid));
-              return Scaffold(
-                backgroundColor: Colors.black,
-                body: Focus(
-                  autofocus: true,
-                  onKeyEvent: _handlePlayerKeyEvent,
-                  child: Stack(
-                    children: [
-                      Positioned.fill(
-                        child: GestureDetector(
-                          onTap: _togglePlayPause,
-                          onLongPressStart: (details) {
-                            _lastSpeed = state.speed;
-                            _updateSpeed(3.0);
-                          },
-                          onLongPressEnd: (_) {
-                            _updateSpeed(_lastSpeed);
-                          },
-                          child: Stack(
-                            children: [
-                              Positioned.fill(
-                                child: Video(
-                                  controller: controller,
-                                  controls: NoVideoControls,
-                                ),
-                              ),
-                              StreamBuilder<bool>(
-                                stream: player.stream.playing,
-                                builder: (context, snapshot) {
-                                  final isPlaying = snapshot.data ?? true;
-                                  if (isPlaying) {
-                                    return const SizedBox.shrink();
-                                  }
-                                  return Center(
-                                    child: Container(
-                                      padding: const EdgeInsets.all(12),
-                                      decoration: BoxDecoration(
-                                        color: Colors.black.withOpacity(0.5),
-                                        shape: BoxShape.circle,
-                                      ),
-                                      child: const Icon(
-                                        Icons.pause,
-                                        size: 36,
-                                        color: Colors.white,
-                                      ),
-                                    ),
-                                  );
-                                },
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      Positioned(
-                        top: 16,
-                        right: 16,
-                        child: IconButton(
-                          onPressed: () => Navigator.of(context).pop(),
-                          icon: const Icon(Icons.close, color: Colors.white),
-                        ),
-                      ),
-                      if (!state.isLoading && state.error == null)
-                        Positioned(
-                          left: 0,
-                          right: 0,
-                          bottom: 0,
-                          child: _buildPlayerControlsOverlay(
-                            state,
-                            onFullscreenTap: () => Navigator.of(context).pop(),
-                            fullscreenIcon: Icons.fullscreen_exit,
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              );
-            },
-          );
-        },
-      ),
-    );
+    setState(() {
+      _isFullscreen = true;
+      _fullscreenControlsVisible = true;
+    });
+    _startFullscreenHideTimer();
+  }
 
+  Future<void> _exitFullscreen() async {
+    _fullscreenHideTimer?.cancel();
+    setState(() {
+      _isFullscreen = false;
+    });
+
+    final isMobile =
+        defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS;
     if (isMobile) {
       await SystemChrome.setPreferredOrientations([
         DeviceOrientation.portraitUp,
@@ -872,6 +933,237 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       return '${(value / 10000).toStringAsFixed(1)}万';
     }
     return value.toString();
+  }
+
+  String _formatEpDuration(int seconds) {
+    final m = (seconds ~/ 60).toString().padLeft(2, '0');
+    final s = (seconds % 60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
+  Widget _buildEpisodeSection(VideoPlayerState state) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: Color(0xFF1A1A1A),
+        border: Border(bottom: BorderSide(color: Colors.white10)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (state.hasMultiPages) _buildPagesList(state),
+          if (state.hasUgcSeason) _buildUgcSeasonList(state),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPagesList(VideoPlayerState state) {
+    final pages = state.pages;
+    // Find the index of the currently active page for auto-scrolling
+    final activeIndex = pages.indexWhere((p) => p['cid'] == state.currentCid);
+
+    // Auto-scroll: use ensureVisible on the active item's key for accurate positioning
+    if (activeIndex >= 0) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final ctx = _activePageKey.currentContext;
+        if (ctx != null) {
+          Scrollable.ensureVisible(
+            ctx,
+            alignment: 0.0, // 将当前播放项定位到最左侧
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          );
+        }
+      });
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+          child: Text(
+            '视频选集 (${pages.length}P)',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+        SizedBox(
+          height: 44,
+          child: Listener(
+            onPointerSignal: (event) {
+              // Convert vertical mouse wheel to horizontal scroll on desktop
+              if (event is PointerScrollEvent &&
+                  _pagesScrollController.hasClients) {
+                _pagesScrollController.jumpTo(
+                  (_pagesScrollController.offset + event.scrollDelta.dy).clamp(
+                    0.0,
+                    _pagesScrollController.position.maxScrollExtent,
+                  ),
+                );
+              }
+            },
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              physics: const BouncingScrollPhysics(),
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              controller: _pagesScrollController,
+              itemCount: pages.length,
+              itemBuilder: (context, index) {
+                final page = pages[index];
+                final cid = page['cid'] as int;
+                final pageNum = page['page'] as int;
+                final part = page['part'] as String? ?? 'P$pageNum';
+                final isActive = cid == state.currentCid;
+                return Padding(
+                  key: isActive ? _activePageKey : null,
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: InkWell(
+                    onTap: () {
+                      ref
+                          .read(playerProvider(widget.bvid).notifier)
+                          .switchPage(cid);
+                    },
+                    borderRadius: BorderRadius.circular(8),
+                    child: Container(
+                      constraints: const BoxConstraints(minWidth: 48),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
+                      decoration: BoxDecoration(
+                        color: isActive
+                            ? const Color(0xFFFB7299)
+                            : Colors.white.withOpacity(0.08),
+                        borderRadius: BorderRadius.circular(8),
+                        border: isActive
+                            ? null
+                            : Border.all(color: Colors.white12),
+                      ),
+                      alignment: Alignment.center,
+                      child: Text(
+                        pages.length <= 20 ? part : 'P$pageNum',
+                        style: TextStyle(
+                          color: isActive ? Colors.white : Colors.white70,
+                          fontSize: 12,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+      ],
+    );
+  }
+
+  Widget _buildUgcSeasonList(VideoPlayerState state) {
+    final season = state.ugcSeason!;
+    final sections = season['sections'] as List<dynamic>? ?? [];
+    final seasonTitle = season['title'] as String? ?? '合集';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+          child: Text(
+            '合集: $seasonTitle',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 200),
+          child: ListView.builder(
+            shrinkWrap: true,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            itemCount: _countTotalEpisodes(sections),
+            itemBuilder: (context, index) {
+              final ep = _getEpisodeAtIndex(sections, index);
+              if (ep == null) return const SizedBox.shrink();
+              final arc = ep['arc'] as Map<String, dynamic>? ?? {};
+              final epBvid = ep['bvid'] as String? ?? '';
+              final title =
+                  arc['title'] as String? ?? ep['title'] as String? ?? '未知标题';
+              final duration = arc['duration'] as int? ?? 0;
+              final isActive = epBvid == widget.bvid;
+
+              return ListTile(
+                dense: true,
+                visualDensity: const VisualDensity(vertical: -2),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                leading: isActive
+                    ? const Icon(
+                        Icons.play_arrow,
+                        color: Color(0xFFFB7299),
+                        size: 18,
+                      )
+                    : Text(
+                        '${index + 1}',
+                        style: const TextStyle(
+                          color: Colors.white38,
+                          fontSize: 13,
+                        ),
+                      ),
+                title: Text(
+                  title,
+                  style: TextStyle(
+                    color: isActive ? const Color(0xFFFB7299) : Colors.white70,
+                    fontSize: 13,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                trailing: Text(
+                  _formatEpDuration(duration),
+                  style: const TextStyle(color: Colors.white38, fontSize: 12),
+                ),
+                onTap: () {
+                  if (!isActive && epBvid.isNotEmpty) {
+                    context.pushReplacement('/player/$epBvid');
+                  }
+                },
+              );
+            },
+          ),
+        ),
+        const SizedBox(height: 8),
+      ],
+    );
+  }
+
+  int _countTotalEpisodes(List<dynamic> sections) {
+    int count = 0;
+    for (final section in sections) {
+      final episodes = section['episodes'] as List<dynamic>? ?? [];
+      count += episodes.length;
+    }
+    return count;
+  }
+
+  Map<String, dynamic>? _getEpisodeAtIndex(List<dynamic> sections, int index) {
+    int offset = 0;
+    for (final section in sections) {
+      final episodes = section['episodes'] as List<dynamic>? ?? [];
+      if (index < offset + episodes.length) {
+        return episodes[index - offset] as Map<String, dynamic>;
+      }
+      offset += episodes.length;
+    }
+    return null;
   }
 
   Widget _buildVideoInfoScrollable(VideoPlayerState state) {

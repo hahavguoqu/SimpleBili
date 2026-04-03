@@ -59,7 +59,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
     await client.init();
 
     if (client.cookie.isNotEmpty) {
-      // Validate cookie is still working
+      // Validate cookie is still working (will auto-attempt refresh if needed)
       final isValid = await client.checkCookieValid();
       if (isValid) {
         state = state.copyWith(status: AuthStatus.authenticated);

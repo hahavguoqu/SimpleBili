@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'image_cache_manager.dart';
 
 class DynamicCard extends StatelessWidget {
   final String authorName;
@@ -52,10 +53,17 @@ class DynamicCard extends StatelessWidget {
                 onTap: onAuthorTap,
                 child: Row(
                   children: [
-                    CircleAvatar(
-                      radius: 20,
-                      backgroundImage: NetworkImage(authorFace),
-                      backgroundColor: Colors.grey[800],
+                    ClipOval(
+                      child: CachedImage(
+                        url: authorFace,
+                        width: 40,
+                        height: 40,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_) => CircleAvatar(
+                          radius: 20,
+                          backgroundColor: Colors.grey[800],
+                        ),
+                      ),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
@@ -92,17 +100,16 @@ class DynamicCard extends StatelessWidget {
                     borderRadius: BorderRadius.circular(8),
                     child: Stack(
                       children: [
-                        Image.network(
-                          cover,
+                        CachedImage(
+                          url: cover,
                           width: 160,
                           height: 90,
                           fit: BoxFit.cover,
-                          errorBuilder: (context, error, stackTrace) =>
-                              Container(
-                                width: 160,
-                                height: 90,
-                                color: Colors.grey[900],
-                              ),
+                          errorBuilder: (context) => Container(
+                            width: 160,
+                            height: 90,
+                            color: Colors.grey[900],
+                          ),
                         ),
                         Positioned(
                           bottom: 4,

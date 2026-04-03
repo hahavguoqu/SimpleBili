@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'favorite_provider.dart';
 import '../../shared/video_card.dart';
+import '../../shared/image_cache_manager.dart';
 
 /// 收藏夹列表页 — 展示用户创建的所有收藏夹
 class FavoritePage extends ConsumerWidget {
@@ -41,12 +42,12 @@ class FavoritePage extends ConsumerWidget {
           leading: ClipRRect(
             borderRadius: BorderRadius.circular(4),
             child: cover.isNotEmpty
-                ? Image.network(
-                    cover,
+                ? CachedImage(
+                    url: cover,
                     width: 80,
                     height: 50,
                     fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => Container(
+                    errorBuilder: (_) => Container(
                       width: 80,
                       height: 50,
                       color: Colors.grey[800],

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'image_cache_manager.dart';
 
 class VideoCard extends StatelessWidget {
   final String title;
@@ -36,11 +37,16 @@ class VideoCard extends StatelessWidget {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  Image.network(
-                    cover,
+                  CachedImage(
+                    url: cover,
                     fit: BoxFit.cover,
-                    errorBuilder: (context, error, stackTrace) =>
-                        Container(color: Colors.grey[900], child: const Icon(Icons.broken_image, color: Colors.white24)),
+                    errorBuilder: (context) => Container(
+                      color: Colors.grey[900],
+                      child: const Icon(
+                        Icons.broken_image,
+                        color: Colors.white24,
+                      ),
+                    ),
                   ),
                   // Bottom Gradient & Stats
                   Positioned(
@@ -61,16 +67,26 @@ class VideoCard extends StatelessWidget {
                       ),
                       child: Row(
                         children: [
-                          const Icon(Icons.play_circle_outline, size: 14, color: Colors.white),
+                          const Icon(
+                            Icons.play_circle_outline,
+                            size: 14,
+                            color: Colors.white,
+                          ),
                           const SizedBox(width: 4),
                           Text(
                             viewCount,
-                            style: const TextStyle(color: Colors.white, fontSize: 11),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                            ),
                           ),
                           const Spacer(),
                           Text(
                             duration,
-                            style: const TextStyle(color: Colors.white, fontSize: 11),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                            ),
                           ),
                         ],
                       ),
@@ -102,7 +118,11 @@ class VideoCard extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 4),
             child: Row(
               children: [
-                const Icon(Icons.account_box_outlined, size: 12, color: Colors.white38),
+                const Icon(
+                  Icons.account_box_outlined,
+                  size: 12,
+                  color: Colors.white38,
+                ),
                 const SizedBox(width: 4),
                 Expanded(
                   child: Text(

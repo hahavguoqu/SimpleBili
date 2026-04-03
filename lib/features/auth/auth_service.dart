@@ -13,7 +13,9 @@ class AuthService {
 
   Future<Map<String, dynamic>> getQrcode() async {
     try {
-      final res = await _client.dio.get('https://passport.bilibili.com/x/passport-login/web/qrcode/generate');
+      final res = await _client.dio.get(
+        'https://passport.bilibili.com/x/passport-login/web/qrcode/generate',
+      );
       if (res.data['code'] == 0) {
         return {
           'url': res.data['data']['url'],
@@ -35,10 +37,20 @@ class AuthService {
       if (res.data['code'] == 0) {
         final data = res.data['data'];
         if (data['code'] == 0) {
+          // Save cookies from response headers
           final cookies = res.headers['set-cookie'];
           if (cookies != null) {
-            final cookieString = cookies.map((c) => c.split(';').first).join('; ');
+            final cookieString = cookies
+                .map((c) => c.split(';').first)
+                .join('; ');
             await _client.saveCookie(cookieString);
+          }
+          // Save refresh_token for cookie auto-refresh
+          final refreshToken = data['refresh_token'];
+          if (refreshToken != null &&
+              refreshToken is String &&
+              refreshToken.isNotEmpty) {
+            await _client.saveRefreshToken(refreshToken);
           }
         }
         return data;
