@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../features/auth/auth_provider.dart';
@@ -8,11 +10,26 @@ import '../features/player/player_page.dart';
 import '../features/up/up_space_page.dart';
 import '../features/favorite/favorite_page.dart';
 
+class RouterRefreshNotifier extends ChangeNotifier {
+  late final StreamSubscription<dynamic> _sub;
+
+  RouterRefreshNotifier(Stream<dynamic> stream) {
+    _sub = stream.listen((_) => notifyListeners());
+  }
+
+  @override
+  void dispose() {
+    _sub.cancel();
+    super.dispose();
+  }
+}
+
 final routerProvider = Provider<GoRouter>((ref) {
-  final authState = ref.watch(authProvider);
+  final authNotifier = ref.read(authProvider.notifier);
 
   return GoRouter(
     initialLocation: '/',
+    refreshListenable: RouterRefreshNotifier(authNotifier.stream),
     routes: [
       GoRoute(path: '/login', builder: (context, state) => const LoginPage()),
       GoRoute(path: '/', builder: (context, state) => const FeedPage()),
@@ -44,6 +61,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
     ],
     redirect: (context, state) {
+      final authState = ref.read(authProvider);
       final isAuth = authState.status == AuthStatus.authenticated;
       final isGoingToLogin = state.uri.path == '/login';
 
