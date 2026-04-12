@@ -1,4 +1,4 @@
-package com.example.simple_bi
+package com.example.SimpleBili
 
 import io.flutter.embedding.android.FlutterActivity
 

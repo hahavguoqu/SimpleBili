@@ -47,7 +47,6 @@ class _GeetestCaptchaPageState extends State<GeetestCaptchaPage> {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Captcha</title>
-    <script src="https://static.geetest.com/static/tools/gt.js"></script>
     <style>
         html, body { margin: 0; width: 100%; height: 100%; background: #ffffff; }
         body {
@@ -83,31 +82,63 @@ class _GeetestCaptchaPageState extends State<GeetestCaptchaPage> {
           if (el) el.innerText = text;
         }
 
-        if (typeof initGeetest !== "function") {
-          setStatus("验证码脚本加载失败，请检查网络后重试");
-          window.flutter_inappwebview.callHandler('onError', "initGeetest not found");
+        function startCaptcha() {
+          try {
+            initGeetest({
+                gt: "${widget.gt}",
+                challenge: "${widget.challenge}",
+                offline: false,
+                new_captcha: true,
+                product: "embed",
+                width: "100%",
+                protocol: "https://",
+                api_server: "api.geetest.com"
+            }, function (captchaObj) {
+                captchaObj.onReady(function () {
+                    setStatus("请完成滑块验证");
+                });
+                captchaObj.appendTo('#captcha');
+                captchaObj.onSuccess(function () {
+                    var result = captchaObj.getValidate();
+                    setStatus("验证成功，正在提交...");
+                    window.flutter_inappwebview.callHandler('onSuccess', result);
+                });
+                captchaObj.onError(function (error) {
+                    setStatus("验证组件报错，请重试");
+                    window.flutter_inappwebview.callHandler('onError', error ? error.msg || error.message || "unknown" : "unknown");
+                });
+            });
+          } catch (e) {
+            setStatus("验证码初始化异常: " + e.message);
+            window.flutter_inappwebview.callHandler('onError', "initGeetest exception: " + e.message);
+          }
         }
 
-        initGeetest({
-            gt: "${widget.gt}",
-            challenge: "${widget.challenge}",
-            offline: false,
-            new_captcha: true,
-            product: "embed",
-            width: "100%"
-        }, function (captchaObj) {
-            setStatus("请完成滑块验证");
-            captchaObj.appendTo('#captcha');
-            captchaObj.onSuccess(function () {
-                var result = captchaObj.getValidate();
-                setStatus("验证成功，正在提交...");
-                window.flutter_inappwebview.callHandler('onSuccess', result);
-            });
-            captchaObj.onError(function (error) {
-                setStatus("验证组件报错，请重试");
-                window.flutter_inappwebview.callHandler('onError', error.message);
-            });
-        });
+        // 动态加载 gt.js，避免 initialData 下 <head> 外部脚本加载时序问题
+        var s = document.createElement('script');
+        s.src = 'https://static.geetest.com/static/tools/gt.js';
+        s.onload = function () {
+          if (typeof initGeetest === 'function') {
+            startCaptcha();
+          } else {
+            setStatus("验证码脚本加载异常");
+            window.flutter_inappwebview.callHandler('onError', "initGeetest not found after load");
+          }
+        };
+        s.onerror = function () {
+          setStatus("验证码脚本加载失败，请检查网络后重试");
+          window.flutter_inappwebview.callHandler('onError', "gt.js load failed");
+        };
+        document.head.appendChild(s);
+
+        // 超时兜底，防止用户无限等待
+        setTimeout(function () {
+          var el = document.getElementById('status');
+          if (el && el.innerText === '正在加载验证码...') {
+            setStatus("验证码加载超时，请返回重试");
+            window.flutter_inappwebview.callHandler('onError', "captcha load timeout");
+          }
+        }, 15000);
     </script>
 </body>
 </html>

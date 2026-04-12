@@ -56,4 +56,5 @@ app.*.map.json
 /macos/Flutter/ephemeral/
 /linux/flutter/ephemeral/
 .codex
+.bili_auth.md
 .vscode
